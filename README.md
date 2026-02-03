@@ -1,9 +1,23 @@
 # Stellar Game Studio
 
-Build two-player Soroban games with a testnet dev sandbox and a production-ready wallet flow.
+Build production-ready, two-player Soroban games fast, with a testnet sandbox and a wallet flow you can ship.
 
-Docs: https://jamesbachini.github.io/Stellar-Game-Studio/
-Repo: https://github.com/jamesbachini/Stellar-Game-Studio
+**Start here:** [Stellar Game Studio Docs](https://jamesbachini.github.io/Stellar-Game-Studio/)
+
+Repo: [github.com/jamesbachini/Stellar-Game-Studio](https://github.com/jamesbachini/Stellar-Game-Studio)
+
+## Why this exists
+
+Stellar Game Studio is a complete workflow for shipping on-chain games without spending weeks on boilerplate. It pairs Soroban contract patterns with a ready-made frontend stack and deployment scripts, so you can focus on game design and gameplay mechanics.
+
+## What you get
+
+- Battle-tested Soroban patterns for two-player games
+- A Game Hub contract that standardizes lifecycle and scoring
+- Deterministic randomness guidance and reference implementations
+- One-command scaffolding for contracts + standalone frontend
+- Testnet setup that generates wallets, deploys contracts, and wires bindings
+- A production build flow that outputs a deployable frontend
 
 ## Quick Start (Dev)
 
@@ -56,9 +70,9 @@ bun run dev:game my-game              # Run a standalone frontend with dev walle
 bun run publish my-game --build        # Export + build production frontend
 ```
 
-## Requirements
+## Contract Rules (Non-Negotiable)
 
-- All games must call `start_game` and `end_game` on the Game Hub contract.
+- Every game must call `start_game` and `end_game` on the Game Hub contract.
 - Game Hub enforces exactly two players per session.
 - Keep randomness deterministic between simulation and submission.
 - Prefer temporary storage with a 30-day TTL for game state.
