@@ -82,17 +82,25 @@ export function MafiaDuelGame({ userAddress, onBack, onGameComplete }: MafiaDuel
   // Track previous userAddress to detect wallet switch
   const prevAddr = useRef(userAddress);
 
-  // ── When wallet switches, reset to home screen ──────────────────────────
+  // ── When wallet switches, go home only if new wallet isn't in the game ──
   useEffect(() => {
     if (prevAddr.current !== userAddress) {
       prevAddr.current = userAddress;
-      // Reset game state so new wallet sees home / join screen
-      setGame(null);
-      setSid(null);
-      setStatus('');
-      setError('');
-      setLoading(false);
+      const alreadyInGame = game !== null && game.slots.some(sl => sl.addr === userAddress);
+      if (alreadyInGame) {
+        // New wallet is already a participant — stay on the game screen
+        setStatus('');
+        setError('');
+      } else {
+        // New wallet is not in this game — reset to home/join screen
+        setGame(null);
+        setSid(null);
+        setStatus('');
+        setError('');
+        setLoading(false);
+      }
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userAddress]);
 
   // ── Polling ─────────────────────────────────────────────────────────────
