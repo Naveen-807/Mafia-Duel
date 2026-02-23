@@ -34,24 +34,15 @@ if (typeof window !== "undefined") {
 export const networks = {
   testnet: {
     networkPassphrase: "Test SDF Network ; September 2015",
-    contractId: "CBMAVPFOGPRAJ5MWK4QIE2DQGRVW5ZUECS3ZSLIBLPXUGOWRWQXEOLDA",
+    contractId: "CAOLYDIRWMP45I5SEAXNDCREDXY7U3G43KEUZTFKCBBNTQ2NN3KATUUS",
   }
 } as const
 
 
-/**
- * Full game state.
- */
 export interface Game {
   creator: string;
-  /**
- * Increments each time a day phase resolves
- */
-day: u32;
-  /**
- * Number of human players currently in the room (1-8)
- */
-human_count: u32;
+  day: u32;
+  human_count: u32;
   invest_is_mafia: boolean;
   last_investigated: Option<u32>;
   last_killed: Option<u32>;
@@ -59,35 +50,18 @@ human_count: u32;
   last_voted_out: Option<u32>;
   phase: u32;
   slots: Array<Slot>;
-  /**
- * Points wagered (informational)
- */
-wager: i128;
-  /**
- * TEAM_MAFIA or TEAM_TOWN once game ends
- */
-winner: Option<u32>;
+  wager: i128;
+  winner: Option<u32>;
 }
 
 
-/**
- * One player slot (human or AI).
- */
 export interface Slot {
-  /**
- * Night target or day vote target index; None = pass/abstain
- */
-action: Option<u32>;
-  /**
- * None = AI-controlled slot
- */
-addr: Option<string>;
+  action: Option<u32>;
+  addr: Option<string>;
   alive: boolean;
+  commitment: Option<Buffer>;
   role: u32;
-  /**
- * Has this slot submitted an action this phase?
- */
-submitted: boolean;
+  submitted: boolean;
 }
 
 export type DataKey = {tag: "Game", values: readonly [u32]} | {tag: "Admin", values: void} | {tag: "GameHubAddress", values: void};
@@ -103,7 +77,9 @@ export const MafiaError = {
   8: {message:"NotAlive"},
   9: {message:"GameAlreadyOver"},
   10: {message:"NotCreator"},
-  11: {message:"SessionExists"}
+  11: {message:"SessionExists"},
+  12: {message:"InvalidReveal"},
+  13: {message:"NoCommitment"}
 }
 
 export interface Client {
@@ -114,8 +90,7 @@ export interface Client {
 
   /**
    * Construct and simulate a resolve transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Resolve the current phase. Anyone can call.
-   * AI slots get PRNG-computed actions; human non-submitters are treated as pass.
+   * Advance phase: PHASE_NIGHT_REVEAL->PHASE_DAY, PHASE_DAY->PHASE_NIGHT_COMMIT.
    */
   resolve: ({session_id}: {session_id: u32}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
 
@@ -131,7 +106,6 @@ export interface Client {
 
   /**
    * Construct and simulate a get_game transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Get full game state. Frontend shows only YOUR role during active play.
    */
   get_game: ({session_id}: {session_id: u32}, options?: MethodOptions) => Promise<AssembledTransaction<Option<Game>>>
 
@@ -142,7 +116,6 @@ export interface Client {
 
   /**
    * Construct and simulate a join_game transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Join an existing lobby. Fills the next open AI slot with this human.
    */
   join_game: ({session_id, player}: {session_id: u32, player: string}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
 
@@ -153,25 +126,33 @@ export interface Client {
 
   /**
    * Construct and simulate a begin_game transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Creator starts the game: shuffles roles onto all 8 slots, enters night 1.
    */
   begin_game: ({session_id, caller}: {session_id: u32, caller: string}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
 
   /**
    * Construct and simulate a create_game transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Create a new 8-player room. Creator occupies slot 0; remaining 7 are AI.
    */
   create_game: ({session_id, creator, wager}: {session_id: u32, creator: string, wager: i128}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
 
   /**
+   * Construct and simulate a reveal_action transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * ZK Step 2 (binding): reveal target+nonce; contract verifies sha256(target||nonce)==commitment.
+   * Returns InvalidReveal (#12) on mismatch — cannot change a committed target.
+   */
+  reveal_action: ({session_id, player, target, nonce}: {session_id: u32, player: string, target: u32, nonce: u64}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
    * Construct and simulate a submit_action transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Submit an action for the current phase.
-   * 
-   * Night: Mafia -> kill target idx | Doctor -> protect target idx
-   * Sheriff -> investigate target idx | Villager -> pass (u32::MAX)
-   * Day:   Vote -> target idx | Abstain -> u32::MAX
+   * Day vote (transparent by design — daytime discussion is public).
    */
   submit_action: ({session_id, player, target}: {session_id: u32, player: string, target: u32}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
+   * Construct and simulate a submit_commitment transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * ZK Step 1 (hiding): store commitment = sha256(target_be || nonce_be).
+   * Auto-advances to PHASE_NIGHT_REVEAL once all alive humans commit.
+   */
+  submit_commitment: ({session_id, player, commitment}: {session_id: u32, player: string, commitment: Buffer}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
 
 }
 export class Client extends ContractClient {
@@ -193,22 +174,24 @@ export class Client extends ContractClient {
   }
   constructor(public readonly options: ContractClientOptions) {
     super(
-      new ContractSpec([ "AAAAAQAAABBGdWxsIGdhbWUgc3RhdGUuAAAAAAAAAARHYW1lAAAADAAAAAAAAAAHY3JlYXRvcgAAAAATAAAAKUluY3JlbWVudHMgZWFjaCB0aW1lIGEgZGF5IHBoYXNlIHJlc29sdmVzAAAAAAAAA2RheQAAAAAEAAAAM051bWJlciBvZiBodW1hbiBwbGF5ZXJzIGN1cnJlbnRseSBpbiB0aGUgcm9vbSAoMS04KQAAAAALaHVtYW5fY291bnQAAAAABAAAAAAAAAAPaW52ZXN0X2lzX21hZmlhAAAAAAEAAAAAAAAAEWxhc3RfaW52ZXN0aWdhdGVkAAAAAAAD6AAAAAQAAAAAAAAAC2xhc3Rfa2lsbGVkAAAAA+gAAAAEAAAAAAAAAApsYXN0X3NhdmVkAAAAAAABAAAAAAAAAA5sYXN0X3ZvdGVkX291dAAAAAAD6AAAAAQAAAAAAAAABXBoYXNlAAAAAAAABAAAAAAAAAAFc2xvdHMAAAAAAAPqAAAH0AAAAARTbG90AAAAHlBvaW50cyB3YWdlcmVkIChpbmZvcm1hdGlvbmFsKQAAAAAABXdhZ2VyAAAAAAAACwAAACZURUFNX01BRklBIG9yIFRFQU1fVE9XTiBvbmNlIGdhbWUgZW5kcwAAAAAABndpbm5lcgAAAAAD6AAAAAQ=",
-        "AAAAAQAAAB5PbmUgcGxheWVyIHNsb3QgKGh1bWFuIG9yIEFJKS4AAAAAAAAAAAAEU2xvdAAAAAUAAAA6TmlnaHQgdGFyZ2V0IG9yIGRheSB2b3RlIHRhcmdldCBpbmRleDsgTm9uZSA9IHBhc3MvYWJzdGFpbgAAAAAABmFjdGlvbgAAAAAD6AAAAAQAAAAZTm9uZSA9IEFJLWNvbnRyb2xsZWQgc2xvdAAAAAAAAARhZGRyAAAD6AAAABMAAAAAAAAABWFsaXZlAAAAAAAAAQAAAAAAAAAEcm9sZQAAAAQAAAAtSGFzIHRoaXMgc2xvdCBzdWJtaXR0ZWQgYW4gYWN0aW9uIHRoaXMgcGhhc2U/AAAAAAAACXN1Ym1pdHRlZAAAAAAAAAE=",
+      new ContractSpec([ "AAAAAQAAAAAAAAAAAAAABEdhbWUAAAAMAAAAAAAAAAdjcmVhdG9yAAAAABMAAAAAAAAAA2RheQAAAAAEAAAAAAAAAAtodW1hbl9jb3VudAAAAAAEAAAAAAAAAA9pbnZlc3RfaXNfbWFmaWEAAAAAAQAAAAAAAAARbGFzdF9pbnZlc3RpZ2F0ZWQAAAAAAAPoAAAABAAAAAAAAAALbGFzdF9raWxsZWQAAAAD6AAAAAQAAAAAAAAACmxhc3Rfc2F2ZWQAAAAAAAEAAAAAAAAADmxhc3Rfdm90ZWRfb3V0AAAAAAPoAAAABAAAAAAAAAAFcGhhc2UAAAAAAAAEAAAAAAAAAAVzbG90cwAAAAAAA+oAAAfQAAAABFNsb3QAAAAAAAAABXdhZ2VyAAAAAAAACwAAAAAAAAAGd2lubmVyAAAAAAPoAAAABA==",
+        "AAAAAQAAAAAAAAAAAAAABFNsb3QAAAAGAAAAAAAAAAZhY3Rpb24AAAAAA+gAAAAEAAAAAAAAAARhZGRyAAAD6AAAABMAAAAAAAAABWFsaXZlAAAAAAAAAQAAAAAAAAAKY29tbWl0bWVudAAAAAAD6AAAA+4AAAAgAAAAAAAAAARyb2xlAAAABAAAAAAAAAAJc3VibWl0dGVkAAAAAAAAAQ==",
         "AAAAAgAAAAAAAAAAAAAAB0RhdGFLZXkAAAAAAwAAAAEAAAAAAAAABEdhbWUAAAABAAAABAAAAAAAAAAAAAAABUFkbWluAAAAAAAAAAAAAAAAAAAOR2FtZUh1YkFkZHJlc3MAAA==",
-        "AAAABAAAAAAAAAAAAAAACk1hZmlhRXJyb3IAAAAAAAsAAAAAAAAADEdhbWVOb3RGb3VuZAAAAAEAAAAAAAAACEdhbWVGdWxsAAAAAgAAAAAAAAANQWxyZWFkeUpvaW5lZAAAAAAAAAMAAAAAAAAACU5vdEluR2FtZQAAAAAAAAQAAAAAAAAACldyb25nUGhhc2UAAAAAAAUAAAAAAAAADEFscmVhZHlBY3RlZAAAAAYAAAAAAAAADUludmFsaWRUYXJnZXQAAAAAAAAHAAAAAAAAAAhOb3RBbGl2ZQAAAAgAAAAAAAAAD0dhbWVBbHJlYWR5T3ZlcgAAAAAJAAAAAAAAAApOb3RDcmVhdG9yAAAAAAAKAAAAAAAAAA1TZXNzaW9uRXhpc3RzAAAAAAAACw==",
+        "AAAABAAAAAAAAAAAAAAACk1hZmlhRXJyb3IAAAAAAA0AAAAAAAAADEdhbWVOb3RGb3VuZAAAAAEAAAAAAAAACEdhbWVGdWxsAAAAAgAAAAAAAAANQWxyZWFkeUpvaW5lZAAAAAAAAAMAAAAAAAAACU5vdEluR2FtZQAAAAAAAAQAAAAAAAAACldyb25nUGhhc2UAAAAAAAUAAAAAAAAADEFscmVhZHlBY3RlZAAAAAYAAAAAAAAADUludmFsaWRUYXJnZXQAAAAAAAAHAAAAAAAAAAhOb3RBbGl2ZQAAAAgAAAAAAAAAD0dhbWVBbHJlYWR5T3ZlcgAAAAAJAAAAAAAAAApOb3RDcmVhdG9yAAAAAAAKAAAAAAAAAA1TZXNzaW9uRXhpc3RzAAAAAAAACwAAAAAAAAANSW52YWxpZFJldmVhbAAAAAAAAAwAAAAAAAAADE5vQ29tbWl0bWVudAAAAA0=",
         "AAAAAAAAAAAAAAAHZ2V0X2h1YgAAAAAAAAAAAQAAABM=",
-        "AAAAAAAAAHlSZXNvbHZlIHRoZSBjdXJyZW50IHBoYXNlLiBBbnlvbmUgY2FuIGNhbGwuCkFJIHNsb3RzIGdldCBQUk5HLWNvbXB1dGVkIGFjdGlvbnM7IGh1bWFuIG5vbi1zdWJtaXR0ZXJzIGFyZSB0cmVhdGVkIGFzIHBhc3MuAAAAAAAAB3Jlc29sdmUAAAAAAQAAAAAAAAAKc2Vzc2lvbl9pZAAAAAAABAAAAAEAAAPpAAAAAgAAB9AAAAAKTWFmaWFFcnJvcgAA",
+        "AAAAAAAAAExBZHZhbmNlIHBoYXNlOiBQSEFTRV9OSUdIVF9SRVZFQUwtPlBIQVNFX0RBWSwgUEhBU0VfREFZLT5QSEFTRV9OSUdIVF9DT01NSVQuAAAAB3Jlc29sdmUAAAAAAQAAAAAAAAAKc2Vzc2lvbl9pZAAAAAAABAAAAAEAAAPpAAAAAgAAB9AAAAAKTWFmaWFFcnJvcgAA",
         "AAAAAAAAAAAAAAAHc2V0X2h1YgAAAAABAAAAAAAAAAduZXdfaHViAAAAABMAAAAA",
         "AAAAAAAAAAAAAAAHdXBncmFkZQAAAAABAAAAAAAAAA1uZXdfd2FzbV9oYXNoAAAAAAAD7gAAACAAAAAA",
-        "AAAAAAAAAEZHZXQgZnVsbCBnYW1lIHN0YXRlLiBGcm9udGVuZCBzaG93cyBvbmx5IFlPVVIgcm9sZSBkdXJpbmcgYWN0aXZlIHBsYXkuAAAAAAAIZ2V0X2dhbWUAAAABAAAAAAAAAApzZXNzaW9uX2lkAAAAAAAEAAAAAQAAA+gAAAfQAAAABEdhbWU=",
+        "AAAAAAAAAAAAAAAIZ2V0X2dhbWUAAAABAAAAAAAAAApzZXNzaW9uX2lkAAAAAAAEAAAAAQAAA+gAAAfQAAAABEdhbWU=",
         "AAAAAAAAAAAAAAAJZ2V0X2FkbWluAAAAAAAAAAAAAAEAAAAT",
-        "AAAAAAAAAERKb2luIGFuIGV4aXN0aW5nIGxvYmJ5LiBGaWxscyB0aGUgbmV4dCBvcGVuIEFJIHNsb3Qgd2l0aCB0aGlzIGh1bWFuLgAAAAlqb2luX2dhbWUAAAAAAAACAAAAAAAAAApzZXNzaW9uX2lkAAAAAAAEAAAAAAAAAAZwbGF5ZXIAAAAAABMAAAABAAAD6QAAAAIAAAfQAAAACk1hZmlhRXJyb3IAAA==",
+        "AAAAAAAAAAAAAAAJam9pbl9nYW1lAAAAAAAAAgAAAAAAAAAKc2Vzc2lvbl9pZAAAAAAABAAAAAAAAAAGcGxheWVyAAAAAAATAAAAAQAAA+kAAAACAAAH0AAAAApNYWZpYUVycm9yAAA=",
         "AAAAAAAAAAAAAAAJc2V0X2FkbWluAAAAAAAAAQAAAAAAAAAJbmV3X2FkbWluAAAAAAAAEwAAAAA=",
-        "AAAAAAAAAElDcmVhdG9yIHN0YXJ0cyB0aGUgZ2FtZTogc2h1ZmZsZXMgcm9sZXMgb250byBhbGwgOCBzbG90cywgZW50ZXJzIG5pZ2h0IDEuAAAAAAAACmJlZ2luX2dhbWUAAAAAAAIAAAAAAAAACnNlc3Npb25faWQAAAAAAAQAAAAAAAAABmNhbGxlcgAAAAAAEwAAAAEAAAPpAAAAAgAAB9AAAAAKTWFmaWFFcnJvcgAA",
-        "AAAAAAAAAEhDcmVhdGUgYSBuZXcgOC1wbGF5ZXIgcm9vbS4gQ3JlYXRvciBvY2N1cGllcyBzbG90IDA7IHJlbWFpbmluZyA3IGFyZSBBSS4AAAALY3JlYXRlX2dhbWUAAAAAAwAAAAAAAAAKc2Vzc2lvbl9pZAAAAAAABAAAAAAAAAAHY3JlYXRvcgAAAAATAAAAAAAAAAV3YWdlcgAAAAAAAAsAAAABAAAD6QAAAAIAAAfQAAAACk1hZmlhRXJyb3IAAA==",
+        "AAAAAAAAAAAAAAAKYmVnaW5fZ2FtZQAAAAAAAgAAAAAAAAAKc2Vzc2lvbl9pZAAAAAAABAAAAAAAAAAGY2FsbGVyAAAAAAATAAAAAQAAA+kAAAACAAAH0AAAAApNYWZpYUVycm9yAAA=",
+        "AAAAAAAAAAAAAAALY3JlYXRlX2dhbWUAAAAAAwAAAAAAAAAKc2Vzc2lvbl9pZAAAAAAABAAAAAAAAAAHY3JlYXRvcgAAAAATAAAAAAAAAAV3YWdlcgAAAAAAAAsAAAABAAAD6QAAAAIAAAfQAAAACk1hZmlhRXJyb3IAAA==",
         "AAAAAAAAAAAAAAANX19jb25zdHJ1Y3RvcgAAAAAAAAIAAAAAAAAABWFkbWluAAAAAAAAEwAAAAAAAAAIZ2FtZV9odWIAAAATAAAAAA==",
-        "AAAAAAAAANdTdWJtaXQgYW4gYWN0aW9uIGZvciB0aGUgY3VycmVudCBwaGFzZS4KCk5pZ2h0OiBNYWZpYSAtPiBraWxsIHRhcmdldCBpZHggfCBEb2N0b3IgLT4gcHJvdGVjdCB0YXJnZXQgaWR4ClNoZXJpZmYgLT4gaW52ZXN0aWdhdGUgdGFyZ2V0IGlkeCB8IFZpbGxhZ2VyIC0+IHBhc3MgKHUzMjo6TUFYKQpEYXk6ICAgVm90ZSAtPiB0YXJnZXQgaWR4IHwgQWJzdGFpbiAtPiB1MzI6Ok1BWAAAAAANc3VibWl0X2FjdGlvbgAAAAAAAAMAAAAAAAAACnNlc3Npb25faWQAAAAAAAQAAAAAAAAABnBsYXllcgAAAAAAEwAAAAAAAAAGdGFyZ2V0AAAAAAAEAAAAAQAAA+kAAAACAAAH0AAAAApNYWZpYUVycm9yAAA=" ]),
+        "AAAAAAAAAKxaSyBTdGVwIDIgKGJpbmRpbmcpOiByZXZlYWwgdGFyZ2V0K25vbmNlOyBjb250cmFjdCB2ZXJpZmllcyBzaGEyNTYodGFyZ2V0fHxub25jZSk9PWNvbW1pdG1lbnQuClJldHVybnMgSW52YWxpZFJldmVhbCAoIzEyKSBvbiBtaXNtYXRjaCDigJQgY2Fubm90IGNoYW5nZSBhIGNvbW1pdHRlZCB0YXJnZXQuAAAADXJldmVhbF9hY3Rpb24AAAAAAAAEAAAAAAAAAApzZXNzaW9uX2lkAAAAAAAEAAAAAAAAAAZwbGF5ZXIAAAAAABMAAAAAAAAABnRhcmdldAAAAAAABAAAAAAAAAAFbm9uY2UAAAAAAAAGAAAAAQAAA+kAAAACAAAH0AAAAApNYWZpYUVycm9yAAA=",
+        "AAAAAAAAAEJEYXkgdm90ZSAodHJhbnNwYXJlbnQgYnkgZGVzaWduIOKAlCBkYXl0aW1lIGRpc2N1c3Npb24gaXMgcHVibGljKS4AAAAAAA1zdWJtaXRfYWN0aW9uAAAAAAAAAwAAAAAAAAAKc2Vzc2lvbl9pZAAAAAAABAAAAAAAAAAGcGxheWVyAAAAAAATAAAAAAAAAAZ0YXJnZXQAAAAAAAQAAAABAAAD6QAAAAIAAAfQAAAACk1hZmlhRXJyb3IAAA==",
+        "AAAAAAAAAIdaSyBTdGVwIDEgKGhpZGluZyk6IHN0b3JlIGNvbW1pdG1lbnQgPSBzaGEyNTYodGFyZ2V0X2JlIHx8IG5vbmNlX2JlKS4KQXV0by1hZHZhbmNlcyB0byBQSEFTRV9OSUdIVF9SRVZFQUwgb25jZSBhbGwgYWxpdmUgaHVtYW5zIGNvbW1pdC4AAAAAEXN1Ym1pdF9jb21taXRtZW50AAAAAAAAAwAAAAAAAAAKc2Vzc2lvbl9pZAAAAAAABAAAAAAAAAAGcGxheWVyAAAAAAATAAAAAAAAAApjb21taXRtZW50AAAAAAPuAAAAIAAAAAEAAAPpAAAAAgAAB9AAAAAKTWFmaWFFcnJvcgAA" ]),
       options
     )
   }
@@ -223,6 +206,8 @@ export class Client extends ContractClient {
         set_admin: this.txFromJSON<null>,
         begin_game: this.txFromJSON<Result<void>>,
         create_game: this.txFromJSON<Result<void>>,
-        submit_action: this.txFromJSON<Result<void>>
+        reveal_action: this.txFromJSON<Result<void>>,
+        submit_action: this.txFromJSON<Result<void>>,
+        submit_commitment: this.txFromJSON<Result<void>>
   }
 }

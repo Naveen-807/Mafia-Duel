@@ -105,9 +105,54 @@ export class MafiaDuelService {
   }
 
   /**
-   * Submit a night or day action.
-   * Night: Mafia→kill, Doctor→protect, Sheriff→investigate, Villager→PASS_TARGET
-   * Day:   Vote→slot index, Abstain→PASS_TARGET
+   * ZK Step 1 (PHASE_NIGHT_COMMIT): Submit SHA-256 commitment onchain.
+   * commitment = sha256(target_u32_be || nonce_u64_be), 32 bytes.
+   * The plaintext target is NOT sent here — only the hash (hiding property).
+   * Phase auto-advances to PHASE_NIGHT_REVEAL once all alive humans commit.
+   */
+  async submitCommitment(
+    sessionId: number,
+    player: string,
+    commitmentHex: string,   // 0x-prefixed 64-char hex from zkCommit()
+    signer: ContractSigner
+  ): Promise<void> {
+    const client = this.createSigningClient(player, signer);
+    // Strip 0x and convert hex to Buffer (32 bytes)
+    const hex = commitmentHex.startsWith('0x') ? commitmentHex.slice(2) : commitmentHex;
+    const commitment = Buffer.from(hex, 'hex');
+    const tx = await client.submit_commitment(
+      { session_id: sessionId, player, commitment },
+      DEFAULT_METHOD_OPTIONS
+    );
+    await signAndSendViaLaunchtube(tx);
+  }
+
+  /**
+   * ZK Step 2 (PHASE_NIGHT_REVEAL): Reveal plaintext action; verified onchain.
+   * Contract recomputes sha256(target||nonce) and rejects if it doesn't match
+   * the stored commitment (MafiaError::InvalidReveal, error #12).
+   * This is the binding property: the committed target cannot be changed.
+   *
+   * nonce must match the nonce used in the corresponding submitCommitment call.
+   */
+  async revealAction(
+    sessionId: number,
+    player: string,
+    target: number,
+    nonce: bigint,
+    signer: ContractSigner
+  ): Promise<void> {
+    const client = this.createSigningClient(player, signer);
+    const tx = await client.reveal_action(
+      { session_id: sessionId, player, target, nonce },
+      DEFAULT_METHOD_OPTIONS
+    );
+    await signAndSendViaLaunchtube(tx);
+  }
+
+  /**
+   * Day vote (PHASE_DAY only). Plaintext — daytime discussion is public.
+   * `target` = slot index to vote out, or PASS_TARGET to abstain.
    */
   async submitAction(
     sessionId: number,
