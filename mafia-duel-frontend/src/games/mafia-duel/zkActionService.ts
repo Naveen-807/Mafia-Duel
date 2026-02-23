@@ -73,15 +73,27 @@ const STORAGE_KEY = 'mafia_zk_commitments';
 
 function loadAll(): ZkCommitment[] {
   try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '[]');
+    const raw = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '[]');
+    // Restore nonce strings → bigint (stored as string to avoid JSON.stringify crash)
+    return raw.map((c: ZkCommitment & { nonce: unknown }) => ({
+      ...c,
+      nonce: BigInt(c.nonce as string | number | bigint),
+    }));
   } catch {
     return [];
   }
 }
 
 function saveAll(items: ZkCommitment[]) {
-  // Cap at 50 stored commitments to avoid localStorage bloat
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(items.slice(-50)));
+  // Cap at 50 stored commitments to avoid localStorage bloat.
+  // JSON.stringify cannot handle BigInt — convert nonce to string.
+  localStorage.setItem(
+    STORAGE_KEY,
+    JSON.stringify(
+      items.slice(-50),
+      (_key, value) => (typeof value === 'bigint' ? value.toString() : value)
+    )
+  );
 }
 
 /**
@@ -156,8 +168,7 @@ export function getStoredCommitment(
   for (let i = all.length - 1; i >= 0; i--) {
     const c = all[i];
     if (c.sessionId === sessionId && c.round === round && c.phase === phase) {
-      // Nonces are serialised as strings in JSON — restore as bigint
-      return { ...c, nonce: BigInt(c.nonce) };
+      return c; // nonce already restored as bigint by loadAll()
     }
   }
   return null;

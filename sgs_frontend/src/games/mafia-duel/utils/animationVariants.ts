@@ -13,6 +13,9 @@ export const transitions = {
     springStiff: { type: 'spring', stiffness: 500, damping: 30 } as Transition,
 };
 
+export const fadeIn = { hidden: { opacity: 0 }, visible: { opacity: 1, transition: { duration: 0.5 } } };
+export const slideInUp = { hidden: { opacity: 0, y: 20 }, visible: { opacity: 1, y: 0, transition: { duration: 0.5 } } };
+
 /* ═══════════════════════════════════════════════════════════
    PAGE TRANSITIONS
    ═══════════════════════════════════════════════════════════ */
