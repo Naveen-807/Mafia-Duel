@@ -13,9 +13,8 @@ export const config = {
   // Backwards-compatible aliases for built-in games
   mockGameHubId: getContractId('mock-game-hub'),
   twentyOneId: getContractId('twenty-one'),
-  numberGuessId: getContractId('number-guess'),
-  diceDuelId: getContractId('dice-duel'),
   mafiaDuelId: getContractId('mafia-duel'),
+  diceDuelId: getContractId('dice-duel'),
 
   devPlayer1Address: import.meta.env.VITE_DEV_PLAYER1_ADDRESS || '',
   devPlayer2Address: import.meta.env.VITE_DEV_PLAYER2_ADDRESS || '',

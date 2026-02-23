@@ -4,38 +4,47 @@ test_snapshots/
 target/
 *.wasm
 
-# Deployment info
+# Deployment info (contains contract IDs and secrets)
 deployment.json
 
-# Bindings
+# Generated TypeScript bindings (auto-generated, do not commit)
 bindings/
 
-# Environment
+# Environment / secrets
 .env
 .env.local
+*.secret
 
 # Dependencies
 node_modules/
 bun.lockb
+package-lock.json
+yarn.lock
 
-# Frontend build
+# Frontend build output
 dist/
 sgs_frontend/dist/
 sgs_frontend/dist-node/
 sgs_frontend/*.tsbuildinfo
-frontend-template/dist/
-frontend-template/dist-node/
-frontend-template/*.tsbuildinfo
+template_frontend/dist/
+template_frontend/dist-node/
+template_frontend/*.tsbuildinfo
 *-frontend/dist/
 *-frontend/dist-node/
 *-frontend/*.tsbuildinfo
 
-# IDE
+# IDE / editor
 .vscode/
 .idea/
 *.swp
 *.swo
+*.orig
 
-# OS
+# OS artifacts
 .DS_Store
 Thumbs.db
+._*
+
+# Temporary / scratch files
+/tmp/
+*.py.tmp

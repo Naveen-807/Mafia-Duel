@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { TwentyOneGame } from '../games/twenty-one/TwentyOneGame';
 import { NumberGuessGame } from '../games/number-guess/NumberGuessGame';
 import { DiceDuelGame } from '../games/dice-duel/DiceDuelGame';
+import { MafiaDuelGame } from '../games/mafia-duel/MafiaDuelGame';
 import { useWallet } from '@/hooks/useWallet';
 import typezeroHero from '../assets/typezero-hero.png';
 import xrayHero from '../assets/xray-hero.png';
@@ -28,6 +29,13 @@ const games = [
     emoji: '🎲',
     description: 'Roll two dice each and race for the highest total.',
     tags: ['2 players', 'Quick launch'],
+  },
+  {
+    id: 'mafia-duel',
+    title: 'Mafia Duel',
+    emoji: '🔪',
+    description: 'Hidden role duel — one Mafia, one Villager. Act blind, reveal all.',
+    tags: ['2 players', 'Hidden roles'],
   },
 ];
 
@@ -78,6 +86,19 @@ export function GamesCatalog({ onBack }: GamesCatalogProps) {
   if (selectedGame === 'dice-duel') {
     return (
       <DiceDuelGame
+        userAddress={userAddress}
+        currentEpoch={1}
+        availablePoints={1000000000n}
+        onBack={handleBackToLibrary}
+        onStandingsRefresh={() => console.log('Refresh standings')}
+        onGameComplete={() => console.log('Game complete')}
+      />
+    );
+  }
+
+  if (selectedGame === 'mafia-duel') {
+    return (
+      <MafiaDuelGame
         userAddress={userAddress}
         currentEpoch={1}
         availablePoints={1000000000n}
