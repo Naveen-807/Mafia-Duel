@@ -25,7 +25,8 @@ interface NightScreenProps {
     slotName: (sl: Slot, i: number) => string;
     slotIcon: (sl: Slot) => string;
     onAction: (target: number) => void;
-    onResolve: () => void;
+    // NOTE: no onResolve — resolve is NOT valid during PHASE_NIGHT_COMMIT.
+    // The contract auto-advances to PHASE_NIGHT_REVEAL once all humans commit.
     lastEventPanel: React.ReactNode;
     zkProofPanel: React.ReactNode;
 }
@@ -42,7 +43,6 @@ export function NightScreen({
     slotName,
     slotIcon,
     onAction,
-    onResolve,
     lastEventPanel,
     zkProofPanel
 }: NightScreenProps) {
@@ -193,21 +193,23 @@ export function NightScreen({
 
                     <div style={{ margin: '1.5rem 0', height: '1px', background: 'rgba(255,255,255,0.1)' }} />
 
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                    {/* Commit-phase progress — no resolve button here.
+                        Contract auto-advances to PHASE_NIGHT_REVEAL once
+                        all alive humans submit their commitment. */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', alignItems: 'center' }}>
                         <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', textAlign: 'center' }}>
                             {pendingCount > 0
-                                ? `${pendingCount} human${pendingCount > 1 ? 's' : ''} yet to act. Resolve early?`
-                                : 'All humans ready — resolve now:'}
+                                ? `⏳ Waiting for ${pendingCount} more player${pendingCount > 1 ? 's' : ''} to commit…`
+                                : '✅ All committed — advancing to reveal phase…'}
                         </div>
-                        <NeonButton
-                            variant="primary"
-                            glow={pendingCount === 0}
-                            onClick={onResolve}
-                            loading={loading}
-                            style={{ background: pendingCount === 0 ? 'var(--neon-purple)' : undefined }}
-                        >
-                            ⚡ Resolve Night
-                        </NeonButton>
+                        {pendingCount === 0 && (
+                            <div style={{ fontSize: '0.75rem', color: 'rgba(165,180,252,0.7)', textAlign: 'center' }}>
+                                The contract will automatically advance to the reveal phase.
+                            </div>
+                        )}
+                        {pendingCount > 0 && loading && (
+                            <div style={{ fontSize: '0.75rem', color: 'rgba(165,180,252,0.7)' }}>Submitting commitment…</div>
+                        )}
                     </div>
                 </NeonCard>
             </motion.div>

@@ -626,7 +626,6 @@ export function MafiaDuelGame({ userAddress, onBack, onGameComplete }: MafiaDuel
           slotName={slotName}
           slotIcon={slotIcon}
           onAction={handleNightCommit}
-          onResolve={handleResolve}
           lastEventPanel={<LastEvent />}
           zkProofPanel={zkProof ? <ZkProofPanel proof={zkProof} slotNames={game.slots.map((sl, i) => slotName(sl, i))} /> : null}
         />
