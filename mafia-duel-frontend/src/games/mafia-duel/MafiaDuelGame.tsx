@@ -1,30 +1,29 @@
-import React, { useState, useEffect, useCallback } from 'react';
+
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { MafiaDuelService, PASS_TARGET } from './mafiaDuelService';
 import type { Game, Slot } from './bindings';
 import { useWallet } from '@/hooks/useWallet';
 import { MAFIA_DUEL_CONTRACT } from '@/utils/constants';
 
-// ── Role / Phase constants (must match contract) ──────────────────────────
-const ROLE_MAFIA = 0;
+// ─── Constants (must mirror contract) ─────────────────────────────────────
+const ROLE_MAFIA    = 0;
 const ROLE_VILLAGER = 1;
-const ROLE_DOCTOR = 2;
-const ROLE_SHERIFF = 3;
+const ROLE_DOCTOR   = 2;
+const ROLE_SHERIFF  = 3;
+const PHASE_LOBBY   = 0;
+const PHASE_NIGHT   = 1;
+const PHASE_DAY     = 2;
+const PHASE_OVER    = 3;
+const TEAM_TOWN     = 1;
 
-const ROLE_LABEL: Record<number, string> = {
-  [ROLE_MAFIA]:    'Mafia 🔪',
-  [ROLE_VILLAGER]: 'Villager 👤',
-  [ROLE_DOCTOR]:   'Doctor 💊',
-  [ROLE_SHERIFF]:  'Sheriff ⭐',
-};
+const ROLE_META = {
+  [ROLE_MAFIA]:    { icon: '🔪', label: 'Mafia',    color: '#f87171', bg: 'rgba(220,38,38,0.18)',   desc: 'Eliminate a Town player each night.' },
+  [ROLE_VILLAGER]: { icon: '👤', label: 'Villager', color: '#94a3b8', bg: 'rgba(100,116,139,0.18)', desc: 'Vote out Mafia members during the day.' },
+  [ROLE_DOCTOR]:   { icon: '💊', label: 'Doctor',   color: '#4ade80', bg: 'rgba(34,197,94,0.18)',   desc: 'Protect one player from being killed each night.' },
+  [ROLE_SHERIFF]:  { icon: '⭐', label: 'Sheriff',  color: '#facc15', bg: 'rgba(234,179,8,0.18)',   desc: 'Investigate one player each night.' },
+} as const;
 
-const PHASE_LOBBY = 0;
-const PHASE_NIGHT = 1;
-const PHASE_DAY   = 2;
-const PHASE_OVER  = 3;
-
-const TEAM_TOWN = 1;
-
-// ── Props ─────────────────────────────────────────────────────────────────
+// ─── Props ─────────────────────────────────────────────────────────────────
 interface MafiaDuelGameProps {
   userAddress: string;
   currentEpoch?: number;
@@ -34,397 +33,660 @@ interface MafiaDuelGameProps {
   onGameComplete?: () => void;
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────
-function shortAddr(addr: string) {
-  return addr.slice(0, 6) + '…' + addr.slice(-4);
+// ─── Helpers ───────────────────────────────────────────────────────────────
+function shortAddr(addr: string) { return addr.slice(0, 6) + '…' + addr.slice(-4); }
+function slotName(sl: Slot, i: number) { return sl.addr ? shortAddr(sl.addr) : `AI Bot #${i + 1}`; }
+function slotIcon(sl: Slot) { return sl.addr ? '🧑' : '🤖'; }
+function parseError(e: unknown) { return e instanceof Error ? e.message : String(e); }
+function isErrCode(msg: string, ...codes: number[]) {
+  return codes.some(c => msg.includes(`#${c}`) || msg.includes(Object.keys({
+    AlreadyActed: 6, WrongPhase: 5, AlreadyJoined: 3, NotInGame: 4,
+    GameAlreadyOver: 9, NotCreator: 10, SessionExists: 11
+  }).find((_, idx) => idx + 1 === c) || ''));
 }
 
-function slotLabel(slot: Slot, idx: number) {
-  if (!slot.addr) return `🤖 AI #${idx + 1}`;
-  return shortAddr(slot.addr);
-}
+// ─── Styles ────────────────────────────────────────────────────────────────
+const C = {
+  page:    { minHeight: '100vh', background: 'linear-gradient(135deg,#090912 0%,#110a18 60%,#080f0c 100%)', color: '#e2e8f0', fontFamily: "'Inter',system-ui,sans-serif" } as React.CSSProperties,
+  wrap:    { maxWidth: 560, margin: '0 auto', padding: '20px 16px' } as React.CSSProperties,
+  card:    (glow = '#7c3aed'): React.CSSProperties => ({ background: 'rgba(12,12,22,0.95)', border: `1px solid ${glow}44`, borderRadius: 16, padding: 20, marginBottom: 14, boxShadow: `0 0 24px ${glow}22, inset 0 1px 0 rgba(255,255,255,0.04)` }),
+  input:   { width: '100%', boxSizing: 'border-box' as const, background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 10, padding: '10px 13px', color: '#e2e8f0', fontSize: 14, outline: 'none', marginBottom: 8 },
+  label:   { display: 'block', fontSize: 10, fontWeight: 700, letterSpacing: 2, textTransform: 'uppercase' as const, color: '#475569', marginBottom: 5 },
+  btn:     (bg: string): React.CSSProperties => ({ width: '100%', padding: '12px 18px', borderRadius: 11, border: 'none', background: bg, color: '#fff', fontWeight: 700, fontSize: 14, cursor: 'pointer', marginTop: 6, letterSpacing: 0.3 }),
+  btnRow:  (bg: string): React.CSSProperties => ({ padding: '9px 14px', borderRadius: 9, border: 'none', background: bg, color: '#fff', fontWeight: 600, fontSize: 13, cursor: 'pointer', width: '100%', textAlign: 'left' as const }),
+  badge:   (color: string, bg: string): React.CSSProperties => ({ background: bg, border: `1px solid ${color}`, color, borderRadius: 6, padding: '2px 7px', fontSize: 10, fontWeight: 700, letterSpacing: 0.5, whiteSpace: 'nowrap' as const }),
+  alert:   (err: boolean): React.CSSProperties => ({ padding: '9px 13px', borderRadius: 9, background: err ? 'rgba(220,38,38,0.13)' : 'rgba(99,102,241,0.13)', border: `1px solid ${err ? 'rgba(220,38,38,0.35)' : 'rgba(99,102,241,0.35)'}`, color: err ? '#fca5a5' : '#a5b4fc', fontSize: 13, marginBottom: 10 }),
+  divider: { border: 'none', borderTop: '1px solid rgba(255,255,255,0.06)', margin: '16px 0' } as React.CSSProperties,
+  slot:    (me: boolean, alive: boolean): React.CSSProperties => ({ display: 'flex', alignItems: 'center', gap: 9, padding: '8px 11px', borderRadius: 9, background: me ? 'rgba(124,58,237,0.1)' : 'rgba(255,255,255,0.025)', border: `1px solid ${me ? 'rgba(124,58,237,0.5)' : 'rgba(255,255,255,0.07)'}`, opacity: alive ? 1 : 0.4 }),
+};
 
-function mySlotIndex(game: Game, wallet: string): number {
-  return game.slots.findIndex(s => s.addr === wallet);
-}
-
-// ── Main Component ────────────────────────────────────────────────────────
+// ─── Main Component ────────────────────────────────────────────────────────
 export function MafiaDuelGame({ userAddress, onBack, onGameComplete }: MafiaDuelGameProps) {
-  const { getContractSigner } = useWallet();
+  const { getContractSigner, switchPlayer, getCurrentDevPlayer, walletType } = useWallet();
   const service = React.useMemo(() => new MafiaDuelService(MAFIA_DUEL_CONTRACT), []);
 
-  const [sessionId, setSessionId] = useState('');
-  const [joinSessionId, setJoinSessionId] = useState('');
-  const [wager, setWager] = useState('100');
-  const [game, setGame] = useState<Game | null>(null);
-  const [activeSessionId, setActiveSessionId] = useState<number | null>(null);
-  const [status, setStatus] = useState('');
-  const [error, setError] = useState('');
+  // Home screen form state
+  const [createSid,  setCreateSid]  = useState('');
+  const [joinSid,    setJoinSid]    = useState('');
+  const [wager,      setWager]      = useState('100');
+
+  // Game state
+  const [game,    setGame]    = useState<Game | null>(null);
+  const [sid,     setSid]     = useState<number | null>(null);
+
+  // UI state
+  const [status,  setStatus]  = useState('');
+  const [error,   setError]   = useState('');
   const [loading, setLoading] = useState(false);
 
-  // ── Polling ──────────────────────────────────────────────────────────────
-  const poll = useCallback(async (sid: number) => {
+  // Track previous userAddress to detect wallet switch
+  const prevAddr = useRef(userAddress);
+
+  // ── When wallet switches, reset to home screen ──────────────────────────
+  useEffect(() => {
+    if (prevAddr.current !== userAddress) {
+      prevAddr.current = userAddress;
+      // Reset game state so new wallet sees home / join screen
+      setGame(null);
+      setSid(null);
+      setStatus('');
+      setError('');
+      setLoading(false);
+    }
+  }, [userAddress]);
+
+  // ── Polling ─────────────────────────────────────────────────────────────
+  const poll = useCallback(async (s: number) => {
     try {
-      const g = await service.getGame(sid);
+      const g = await service.getGame(s);
       if (g) setGame(g);
-    } catch { /* ignore */ }
+    } catch {}
   }, [service]);
 
   useEffect(() => {
-    if (!activeSessionId) return;
-    poll(activeSessionId);
-    const id = setInterval(() => poll(activeSessionId), 4000);
+    if (!sid) return;
+    poll(sid);
+    const id = setInterval(() => poll(sid), 3500);
     return () => clearInterval(id);
-  }, [activeSessionId, poll]);
+  }, [sid, poll]);
 
-  // When game ends, call onGameComplete callback
   useEffect(() => {
-    if (game?.phase === PHASE_OVER && onGameComplete) {
-      onGameComplete();
-    }
+    if (game?.phase === PHASE_OVER && onGameComplete) onGameComplete();
   }, [game?.phase, onGameComplete]);
 
-  // ── Action wrapper ────────────────────────────────────────────────────────
+  // ── Generic action runner ────────────────────────────────────────────────
   async function run(label: string, fn: () => Promise<void>) {
-    setError('');
-    setLoading(true);
-    setStatus(`${label}…`);
+    setError(''); setLoading(true); setStatus(label + '…');
     try {
       await fn();
-      setStatus(`${label} — done ✅`);
+      setStatus(label + ' ✅');
+      if (sid) poll(sid); // refresh immediately after action
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setError(msg);
-      setStatus('');
+      const msg = parseError(e);
+      // Error #6 AlreadyActed — already submitted, just refresh
+      if (msg.includes('#6') || msg.toLowerCase().includes('alreadyacted')) {
+        setStatus('Already submitted — waiting for others…');
+        if (sid) poll(sid);
+      }
+      // Error #9 GameAlreadyOver
+      else if (msg.includes('#9') || msg.toLowerCase().includes('gamealreadyover')) {
+        setStatus('Game already over — refreshing…');
+        if (sid) poll(sid);
+      }
+      else {
+        setError(msg);
+        setStatus('');
+      }
     } finally {
       setLoading(false);
     }
   }
 
-  // ── Handlers ──────────────────────────────────────────────────────────────
+  // ── Handlers ─────────────────────────────────────────────────────────────
   async function handleCreate() {
-    const sid = parseInt(sessionId);
-    if (!sid) return setError('Enter a valid session ID number');
-    await run('Creating room', async () => {
-      const signer = getContractSigner();
-      await service.createGame(sid, userAddress, BigInt(wager), signer);
-      setActiveSessionId(sid);
-    });
+    const id = parseInt(createSid);
+    if (!id || isNaN(id)) return setError('Enter a valid session ID number');
+    setError(''); setLoading(true); setStatus('Creating room…');
+    try {
+      const sg = getContractSigner();
+      await service.createGame(id, userAddress, BigInt(wager || '0'), sg);
+      setSid(id);
+      await poll(id); // load immediately
+      setStatus('Room created ✅ — you can share session ID ' + id);
+    } catch (e) {
+      const msg = parseError(e);
+      if (msg.includes('#11') || msg.toLowerCase().includes('sessionexists')) {
+        // Session already exists — just join it
+        setSid(id);
+        await poll(id);
+        setStatus('Session already exists — connected ✅');
+      } else {
+        setError(msg);
+      }
+    } finally {
+      setLoading(false);
+    }
   }
 
   async function handleJoin() {
-    const sid = parseInt(joinSessionId);
-    if (!sid) return setError('Enter a valid session ID number');
-    await run('Joining room', async () => {
-      const signer = getContractSigner();
-      await service.joinGame(sid, userAddress, signer);
-      setActiveSessionId(sid);
+    const id = parseInt(joinSid);
+    if (!id || isNaN(id)) return setError('Enter a valid session ID number');
+    setError(''); setLoading(true); setStatus('Looking up game…');
+    try {
+      const existing = await service.getGame(id);
+      if (!existing) {
+        setError('No game found with session ID ' + id);
+        setLoading(false);
+        return;
+      }
+      const alreadyIn = existing.slots.some(sl => sl.addr === userAddress);
+      if (alreadyIn) {
+        // Reconnect — user already in the game
+        setGame(existing);
+        setSid(id);
+        setStatus('Reconnected ✅');
+        setLoading(false);
+        return;
+      }
+      if (existing.phase !== PHASE_LOBBY) {
+        setError('This game has already started — you cannot join mid-game.');
+        setLoading(false);
+        return;
+      }
+      const sg = getContractSigner();
+      await service.joinGame(id, userAddress, sg);
+      setSid(id);
+      await poll(id);
+      setStatus('Joined room ✅');
+    } catch (e) {
+      const msg = parseError(e);
+      if (msg.includes('#3') || msg.toLowerCase().includes('alreadyjoined')) {
+        setSid(id);
+        await poll(id);
+        setStatus('Already in this game — reconnected ✅');
+      } else if (msg.includes('#5') || msg.toLowerCase().includes('wrongphase')) {
+        setError('This game has already started — you cannot join mid-game.');
+      } else {
+        setError(msg);
+      }
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // Join directly from the lobby card (for users who switched wallet after creator joined)
+  async function handleLobbyJoin() {
+    if (!sid) return;
+    await run('Joining game', async () => {
+      const sg = getContractSigner();
+      await service.joinGame(sid, userAddress, sg);
     });
   }
 
   async function handleBegin() {
     await run('Starting game', async () => {
-      const signer = getContractSigner();
-      await service.beginGame(activeSessionId!, userAddress, signer);
+      const sg = getContractSigner();
+      await service.beginGame(sid!, userAddress, sg);
     });
   }
 
-  async function handleSubmitAction(target: number) {
+  async function handleAction(target: number) {
     await run('Submitting action', async () => {
-      const signer = getContractSigner();
-      await service.submitAction(activeSessionId!, userAddress, target, signer);
+      const sg = getContractSigner();
+      await service.submitAction(sid!, userAddress, target, sg);
     });
   }
 
   async function handleResolve() {
     await run('Resolving phase', async () => {
-      const signer = getContractSigner();
-      await service.resolve(activeSessionId!, userAddress, signer);
+      const sg = getContractSigner();
+      await service.resolve(sid!, userAddress, sg);
     });
   }
 
-  // ── Phase renderers ───────────────────────────────────────────────────────
-  function renderLobby(g: Game) {
-    const isCreator = g.creator === userAddress;
-    return (
-      <div>
-        <h2 className="text-xl font-bold mb-2">🏠 Lobby — Session #{activeSessionId}</h2>
-        <p className="text-sm text-gray-400 mb-4">Share this session ID with friends. Empty slots will be filled by AI when the game starts.</p>
-        <div className="grid grid-cols-2 gap-2 mb-4">
-          {g.slots.map((s, i) => (
-            <div key={i} className={`p-2 rounded border text-sm ${s.addr === userAddress ? 'border-yellow-400 bg-yellow-900/20' : 'border-gray-600 bg-gray-800'}`}>
-              <span className="font-mono">{slotLabel(s, i)}</span>
-              {s.addr === userAddress && <span className="ml-1 text-yellow-400 text-xs">(you)</span>}
-            </div>
-          ))}
+  // Dev wallet switch (only in dev mode)
+  async function handleSwitchWallet(p: 1 | 2) {
+    if (walletType !== 'dev') return;
+    setLoading(true);
+    try { await switchPlayer(p); } catch (e) { setError(parseError(e)); }
+    finally { setLoading(false); }
+  }
+
+  // ── Derived values ───────────────────────────────────────────────────────
+  const myIdx  = game ? game.slots.findIndex(sl => sl.addr === userAddress) : -1;
+  const me     = myIdx !== -1 && game ? game.slots[myIdx] : null;
+  const inGame = myIdx !== -1;
+  const curPlayer = walletType === 'dev' ? getCurrentDevPlayer() : null;
+
+  // ── Shared UI pieces ─────────────────────────────────────────────────────
+  const WalletBar = () => (
+    walletType === 'dev' ? (
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', background:'rgba(255,255,255,0.03)', borderRadius:10, padding:'8px 12px', marginBottom:12, fontSize:12 }}>
+        <span style={{ color:'#475569' }}>
+          {shortAddr(userAddress)} <span style={{ color:'#7c3aed' }}>({curPlayer === 1 ? 'Player 1' : 'Player 2'})</span>
+        </span>
+        <div style={{ display:'flex', gap:6 }}>
+          <button onClick={() => handleSwitchWallet(1)} style={{ padding:'3px 9px', borderRadius:6, border:'none', background: curPlayer===1 ? '#7c3aed' : 'rgba(255,255,255,0.07)', color:'#fff', fontSize:11, cursor:'pointer', fontWeight:600 }}>P1</button>
+          <button onClick={() => handleSwitchWallet(2)} style={{ padding:'3px 9px', borderRadius:6, border:'none', background: curPlayer===2 ? '#7c3aed' : 'rgba(255,255,255,0.07)', color:'#fff', fontSize:11, cursor:'pointer', fontWeight:600 }}>P2</button>
         </div>
-        {isCreator ? (
-          <button onClick={handleBegin} disabled={loading} className="w-full py-2 bg-blue-600 hover:bg-blue-700 rounded font-semibold disabled:opacity-50">
-            ▶ Start Game
-          </button>
-        ) : (
-          <p className="text-center text-gray-400 italic">Waiting for host to start the game…</p>
-        )}
+      </div>
+    ) : null
+  );
+
+  const PageHeader = ({ phase }: { phase: number }) => {
+    const labels = ['🏠 Lobby', '🌙 Night', '☀️ Day', '🏁 Game Over'];
+    return (
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:16 }}>
+        <div>
+          <div style={{ fontWeight:800, fontSize:17 }}>{labels[phase]}{phase===PHASE_NIGHT||phase===PHASE_DAY ? ` — Round ${game?.day ?? ''}` : ''}</div>
+          <div style={{ fontSize:11, color:'#475569' }}>Session #{sid}</div>
+        </div>
+        {onBack && <button onClick={onBack} style={{ background:'rgba(255,255,255,0.05)', border:'1px solid rgba(255,255,255,0.08)', borderRadius:8, padding:'5px 11px', color:'#94a3b8', fontSize:11, cursor:'pointer' }}>← Back</button>}
       </div>
     );
-  }
+  };
 
-  function renderNight(g: Game) {
-    const myIdx = mySlotIndex(g, userAddress);
-    if (myIdx === -1) return <p className="text-gray-400">You are not in this game.</p>;
-    const me = g.slots[myIdx];
-    const aliveSlots = g.slots.map((s, i) => ({ s, i })).filter(({ s }) => s.alive);
+  const Alerts = () => (
+    <>
+      {status && !error && <div style={C.alert(false)}>⚡ {status}</div>}
+      {error && <div style={C.alert(true)}>⚠ {error} <button onClick={()=>setError('')} style={{ float:'right', background:'none', border:'none', color:'#fca5a5', cursor:'pointer', fontSize:12 }}>✕</button></div>}
+      {loading && <div style={C.alert(false)}>⏳ Processing…</div>}
+    </>
+  );
 
-    return (
-      <div>
-        <h2 className="text-xl font-bold mb-1">🌙 Night {g.day}</h2>
-        <p className="text-sm mb-3">Your role: <span className="font-bold">{ROLE_LABEL[me.role]}</span></p>
-
-        {!me.alive && (
-          <p className="text-gray-400 italic mb-4">You were eliminated. You can still call Resolve to advance the phase.</p>
-        )}
-
-        {me.alive && (
-          me.submitted ? (
-            <p className="text-green-400 mb-4">✅ Action submitted. Waiting for others…</p>
-          ) : (
-            <div className="mb-4">
-              {me.role === ROLE_VILLAGER && (
-                <div>
-                  <p className="text-gray-300 mb-2">Villagers sleep through the night.</p>
-                  <button onClick={() => handleSubmitAction(PASS_TARGET)} disabled={loading}
-                    className="py-2 px-4 bg-gray-700 hover:bg-gray-600 rounded disabled:opacity-50">
-                    Pass (Sleep)
-                  </button>
-                </div>
-              )}
-              {me.role === ROLE_MAFIA && (
-                <div>
-                  <p className="text-gray-300 mb-2">Choose a Town player to eliminate:</p>
-                  <div className="flex flex-col gap-2">
-                    {aliveSlots.filter(({ s }) => s.role !== ROLE_MAFIA).map(({ s, i }) => (
-                      <button key={i} onClick={() => handleSubmitAction(i)} disabled={loading}
-                        className="py-1 px-3 bg-red-700 hover:bg-red-600 rounded text-sm disabled:opacity-50">
-                        {slotLabel(s, i)}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {me.role === ROLE_DOCTOR && (
-                <div>
-                  <p className="text-gray-300 mb-2">Choose a player to protect tonight:</p>
-                  <div className="flex flex-col gap-2">
-                    {aliveSlots.map(({ s, i }) => (
-                      <button key={i} onClick={() => handleSubmitAction(i)} disabled={loading}
-                        className="py-1 px-3 bg-green-700 hover:bg-green-600 rounded text-sm disabled:opacity-50">
-                        {slotLabel(s, i)}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {me.role === ROLE_SHERIFF && (
-                <div>
-                  <p className="text-gray-300 mb-2">Choose a player to investigate:</p>
-                  <div className="flex flex-col gap-2">
-                    {aliveSlots.filter(({ i }) => i !== myIdx).map(({ s, i }) => (
-                      <button key={i} onClick={() => handleSubmitAction(i)} disabled={loading}
-                        className="py-1 px-3 bg-blue-700 hover:bg-blue-600 rounded text-sm disabled:opacity-50">
-                        {slotLabel(s, i)}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          )
-        )}
-
-        <hr className="border-gray-700 my-4" />
-        <button onClick={handleResolve} disabled={loading} className="w-full py-2 bg-purple-700 hover:bg-purple-600 rounded font-semibold disabled:opacity-50">
-          ⚡ Resolve Night
-        </button>
-        <p className="text-xs text-gray-500 mt-1">Anyone can call this once all humans have acted (or to skip).</p>
-
-        {renderLastResult(g)}
-      </div>
-    );
-  }
-
-  function renderDay(g: Game) {
-    const myIdx = mySlotIndex(g, userAddress);
-    const me = myIdx !== -1 ? g.slots[myIdx] : null;
-    const aliveSlots = g.slots.map((s, i) => ({ s, i })).filter(({ s }) => s.alive);
-
-    return (
-      <div>
-        <h2 className="text-xl font-bold mb-1">☀️ Day {g.day} — Town Vote</h2>
-        {me && !me.alive && <p className="text-gray-400 italic mb-2">You were eliminated.</p>}
-
-        {me && me.alive && (
-          me.submitted ? (
-            <p className="text-green-400 mb-3">✅ Vote submitted. Waiting for others…</p>
-          ) : (
-            <div className="mb-3">
-              <p className="text-gray-300 mb-2">Vote to eliminate a player:</p>
-              <div className="flex flex-col gap-2">
-                {aliveSlots.filter(({ i }) => i !== myIdx).map(({ s, i }) => (
-                  <button key={i} onClick={() => handleSubmitAction(i)} disabled={loading}
-                    className="py-1 px-3 bg-orange-700 hover:bg-orange-600 rounded text-sm disabled:opacity-50">
-                    {slotLabel(s, i)}
-                  </button>
-                ))}
+  const SlotGrid = ({ showRole }: { showRole?: boolean }) => (
+    <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:7 }}>
+      {game!.slots.map((sl, i) => {
+        const rm = showRole ? ROLE_META[sl.role as keyof typeof ROLE_META] : null;
+        const isMe = sl.addr === userAddress;
+        return (
+          <div key={i} style={C.slot(isMe, sl.alive)}>
+            <span style={{ fontSize:15 }}>{slotIcon(sl)}</span>
+            <div style={{ flex:1, minWidth:0 }}>
+              <div style={{ fontSize:12, fontWeight:600, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                {slotName(sl, i)}
+              </div>
+              <div style={{ fontSize:10, color: sl.alive ? '#4ade80' : '#ef4444', marginTop:1 }}>
+                {showRole && rm ? `${rm.icon} ${rm.label}` : (sl.alive ? '● alive' : '✕ out')}
               </div>
             </div>
-          )
-        )}
-
-        <hr className="border-gray-700 my-4" />
-        <button onClick={handleResolve} disabled={loading} className="w-full py-2 bg-purple-700 hover:bg-purple-600 rounded font-semibold disabled:opacity-50">
-          ⚡ Resolve Day Vote
-        </button>
-
-        {renderLastResult(g)}
-      </div>
-    );
-  }
-
-  function renderLastResult(g: Game) {
-    const parts: string[] = [];
-    if (g.last_killed !== undefined && g.last_killed !== null) {
-      const who = slotLabel(g.slots[g.last_killed], g.last_killed);
-      if (g.last_saved) {
-        parts.push(`🛡 ${who} was attacked but the Doctor saved them!`);
-      } else {
-        parts.push(`💀 ${who} was eliminated by the Mafia.`);
-      }
-    }
-    if (g.last_investigated !== undefined && g.last_investigated !== null) {
-      const who = slotLabel(g.slots[g.last_investigated], g.last_investigated);
-      const verdict = g.invest_is_mafia ? '⚠️ IS Mafia' : '✅ is Town';
-      parts.push(`🔍 Sheriff investigated ${who}: ${verdict}`);
-    }
-    if (g.last_voted_out !== undefined && g.last_voted_out !== null) {
-      const who = slotLabel(g.slots[g.last_voted_out], g.last_voted_out);
-      const roleLabel = ROLE_LABEL[g.slots[g.last_voted_out].role];
-      parts.push(`🗳 Town voted out ${who} — they were a ${roleLabel}!`);
-    }
-    if (!parts.length) return null;
-    return (
-      <div className="mt-4 p-3 bg-gray-800 rounded text-sm">
-        <p className="font-semibold mb-1 text-gray-300">📜 Last Resolution:</p>
-        {parts.map((p, i) => <p key={i}>{p}</p>)}
-      </div>
-    );
-  }
-
-  function renderOver(g: Game) {
-    const winnerLabel = g.winner === TEAM_TOWN ? 'Town 🏆' : 'Mafia 🔪';
-    const winnerColor = g.winner === TEAM_TOWN ? 'text-green-400' : 'text-red-400';
-    return (
-      <div>
-        <h2 className={`text-2xl font-bold mb-3 ${winnerColor}`}>Game Over — {winnerLabel} wins!</h2>
-        <div className="grid grid-cols-2 gap-2 mb-4">
-          {g.slots.map((s, i) => (
-            <div key={i} className={`p-2 rounded border text-sm ${s.role === ROLE_MAFIA ? 'border-red-500 bg-red-900/20' : 'border-gray-600 bg-gray-800'}`}>
-              <div className="font-mono">{slotLabel(s, i)}{s.addr === userAddress ? ' (you)' : ''}</div>
-              <div className="text-xs mt-0.5">{ROLE_LABEL[s.role]} — {s.alive ? '✅ alive' : '💀 dead'}</div>
-            </div>
-          ))}
-        </div>
-        <button
-          onClick={() => { setGame(null); setActiveSessionId(null); setStatus(''); }}
-          className="w-full py-2 bg-gray-700 hover:bg-gray-600 rounded"
-        >
-          Play Again
-        </button>
-        {onBack && (
-          <button onClick={onBack} className="w-full mt-2 py-2 bg-gray-800 hover:bg-gray-700 rounded text-sm">
-            ← Back to Library
-          </button>
-        )}
-      </div>
-    );
-  }
-
-  // ── In-game rendering ──────────────────────────────────────────────────────
-  if (game && activeSessionId !== null) {
-    return (
-      <div className="max-w-xl mx-auto p-4 text-white">
-        <div className="flex justify-between items-center mb-3">
-          {onBack && (
-            <button onClick={onBack} className="text-sm text-gray-400 hover:text-white">
-              ← Back
-            </button>
-          )}
-          <span className="text-xs text-gray-500">Session #{activeSessionId}</span>
-        </div>
-        {status && <p className="text-sm text-blue-400 mb-2">{status}</p>}
-        {error  && <p className="text-sm text-red-400 mb-2">❌ {error}</p>}
-        {loading && <p className="text-xs text-gray-500 mb-2">Processing…</p>}
-        {game.phase === PHASE_LOBBY && renderLobby(game)}
-        {game.phase === PHASE_NIGHT && renderNight(game)}
-        {game.phase === PHASE_DAY   && renderDay(game)}
-        {game.phase === PHASE_OVER  && renderOver(game)}
-      </div>
-    );
-  }
-
-  // ── Home screen ────────────────────────────────────────────────────────────
-  return (
-    <div className="max-w-md mx-auto p-4 text-white">
-      <div className="flex items-center mb-6">
-        {onBack && (
-          <button onClick={onBack} className="mr-3 text-gray-400 hover:text-white text-sm">
-            ← Back
-          </button>
-        )}
-        <h1 className="text-2xl font-bold">🕵️ Mafia Duel</h1>
-      </div>
-      <p className="text-gray-400 text-sm mb-6 text-center">
-        Up to 8 players — empty slots are filled by AI.<br/>
-        Roles: 2 Mafia · 1 Doctor · 1 Sheriff · 4 Villager
-      </p>
-
-      {status && <p className="text-sm text-blue-400 mb-3">{status}</p>}
-      {error  && <p className="text-sm text-red-400 mb-3">❌ {error}</p>}
-
-      {/* Create */}
-      <div className="bg-gray-800 p-4 rounded mb-4">
-        <h2 className="font-semibold mb-3">Create a Room</h2>
-        <input
-          className="w-full bg-gray-700 p-2 rounded mb-2 text-sm"
-          placeholder="Session ID (any number)"
-          value={sessionId}
-          onChange={e => setSessionId(e.target.value)}
-        />
-        <input
-          className="w-full bg-gray-700 p-2 rounded mb-3 text-sm"
-          placeholder="Wager (points)"
-          value={wager}
-          onChange={e => setWager(e.target.value)}
-        />
-        <button onClick={handleCreate} disabled={loading}
-          className="w-full py-2 bg-blue-600 hover:bg-blue-700 rounded font-semibold disabled:opacity-50">
-          {loading ? 'Creating…' : 'Create Room'}
-        </button>
-      </div>
-
-      {/* Join */}
-      <div className="bg-gray-800 p-4 rounded">
-        <h2 className="font-semibold mb-3">Join a Room</h2>
-        <input
-          className="w-full bg-gray-700 p-2 rounded mb-3 text-sm"
-          placeholder="Session ID from host"
-          value={joinSessionId}
-          onChange={e => setJoinSessionId(e.target.value)}
-        />
-        <button onClick={handleJoin} disabled={loading}
-          className="w-full py-2 bg-green-600 hover:bg-green-700 rounded font-semibold disabled:opacity-50">
-          {loading ? 'Joining…' : 'Join Room'}
-        </button>
-      </div>
+            {isMe && <span style={{ fontSize:9, fontWeight:800, color:'#7c3aed', letterSpacing:1 }}>YOU</span>}
+          </div>
+        );
+      })}
     </div>
   );
+
+  const LastEvent = () => {
+    if (!game) return null;
+    const lines: { icon: string; text: string }[] = [];
+    if (game.last_killed != null) {
+      const sl = game.slots[game.last_killed];
+      const who = slotName(sl, game.last_killed);
+      lines.push(game.last_saved
+        ? { icon: '🛡', text: `${who} was attacked — Doctor saved them!` }
+        : { icon: '💀', text: `${who} was eliminated by the Mafia.` });
+    }
+    if (game.last_investigated != null) {
+      const sl = game.slots[game.last_investigated];
+      lines.push({ icon: '🔍', text: `Sheriff investigated ${slotName(sl, game.last_investigated)}: ${game.invest_is_mafia ? '⚠️ IS Mafia!' : '✅ Town member.'}` });
+    }
+    if (game.last_voted_out != null) {
+      const sl = game.slots[game.last_voted_out];
+      const rm = ROLE_META[sl.role as keyof typeof ROLE_META];
+      lines.push({ icon: '🗳', text: `Town voted out ${slotName(sl, game.last_voted_out)} — they were ${rm.icon} ${rm.label}!` });
+    }
+    if (!lines.length) return null;
+    return (
+      <div style={{ background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.07)', borderRadius:11, padding:'12px 14px', marginBottom:12 }}>
+        <div style={{ fontSize:10, fontWeight:700, letterSpacing:2, textTransform:'uppercase', color:'#475569', marginBottom:9 }}>Last Resolution</div>
+        {lines.map((l, i) => (
+          <div key={i} style={{ display:'flex', gap:9, alignItems:'flex-start', marginBottom: i < lines.length-1 ? 7 : 0 }}>
+            <span style={{ fontSize:15, flexShrink:0 }}>{l.icon}</span>
+            <span style={{ fontSize:13, color:'#cbd5e1', lineHeight:1.5 }}>{l.text}</span>
+          </div>
+        ))}
+      </div>
+    );
+  };
+
+  // ── HOME SCREEN ───────────────────────────────────────────────────────────
+  if (!game || sid === null) {
+    return (
+      <div style={C.page}>
+        <div style={C.wrap}>
+          <WalletBar />
+          {/* Hero */}
+          <div style={{ textAlign:'center', padding:'28px 0 20px' }}>
+            <div style={{ fontSize:56, marginBottom:6 }}>🕵️</div>
+            <h1 style={{ fontSize:32, fontWeight:900, letterSpacing:'-0.5px', background:'linear-gradient(90deg,#f87171,#c084fc)', WebkitBackgroundClip:'text', WebkitTextFillColor:'transparent', margin:0 }}>
+              Mafia Duel
+            </h1>
+            <p style={{ fontSize:13, color:'#475569', marginTop:8, lineHeight:1.7 }}>
+              8 players · AI fills empty seats<br/>
+              <span style={{ color:'#f87171' }}>2 Mafia</span> · <span style={{ color:'#4ade80' }}>1 Doctor</span> · <span style={{ color:'#facc15' }}>1 Sheriff</span> · <span style={{ color:'#64748b' }}>4 Villager</span>
+            </p>
+          </div>
+
+          <Alerts />
+
+          {/* Create room */}
+          <div style={C.card('#7c3aed')}>
+            <div style={{ fontWeight:700, fontSize:15, marginBottom:14, display:'flex', alignItems:'center', gap:8 }}>
+              <span style={{ fontSize:18 }}>🏠</span> Create a Room
+            </div>
+            <label style={C.label}>Session ID (pick any number)</label>
+            <input style={C.input} placeholder="e.g. 42069" value={createSid} onChange={e => setCreateSid(e.target.value)} />
+            <label style={C.label}>Wager (points)</label>
+            <input style={C.input} placeholder="100" value={wager} onChange={e => setWager(e.target.value)} />
+            <button style={C.btn('linear-gradient(135deg,#7c3aed,#4f46e5)')} disabled={loading} onClick={handleCreate}>
+              {loading ? '⏳ Creating…' : '+ Create Room'}
+            </button>
+          </div>
+
+          {/* Join room */}
+          <div style={C.card('#16a34a')}>
+            <div style={{ fontWeight:700, fontSize:15, marginBottom:14, display:'flex', alignItems:'center', gap:8 }}>
+              <span style={{ fontSize:18 }}>🚪</span> Join a Room
+            </div>
+            <label style={C.label}>Session ID from host</label>
+            <input style={C.input} placeholder="Paste session ID here" value={joinSid} onChange={e => setJoinSid(e.target.value)} />
+            <button style={C.btn('linear-gradient(135deg,#16a34a,#15803d)')} disabled={loading} onClick={handleJoin}>
+              {loading ? '⏳ Joining…' : '→ Join Room'}
+            </button>
+          </div>
+
+          {/* How to play */}
+          <div style={C.card('#0f172a')}>
+            <div style={{ fontWeight:700, fontSize:13, marginBottom:10, color:'#64748b' }}>HOW TO PLAY (DEV)</div>
+            <div style={{ fontSize:12, color:'#475569', lineHeight:1.8 }}>
+              1. <b style={{ color:'#94a3b8' }}>Player 1</b> creates a room with any session ID.<br/>
+              2. Switch to <b style={{ color:'#94a3b8' }}>Player 2</b> using P1/P2 buttons above.<br/>
+              3. Player 2 enters the same session ID and clicks Join.<br/>
+              4. Switch back to Player 1 and click <b style={{ color:'#94a3b8' }}>Start Game</b>.<br/>
+              5. Each player takes their night/day actions in turn.<br/>
+              6. Click <b style={{ color:'#94a3b8' }}>Resolve</b> to advance each phase.
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── LOBBY ─────────────────────────────────────────────────────────────────
+  if (game.phase === PHASE_LOBBY) {
+    const isCreator = game.creator === userAddress;
+    const humanSlots = game.slots.filter(sl => sl.addr !== null);
+    const joinedAddresses = game.slots.map(sl => sl.addr).filter(Boolean);
+    const alreadyJoined = joinedAddresses.includes(userAddress);
+    const canJoin = !alreadyJoined && !isCreator;
+    const isFull = game.human_count >= 8;
+
+    return (
+      <div style={C.page}>
+        <div style={C.wrap}>
+          <WalletBar />
+          <PageHeader phase={PHASE_LOBBY} />
+          <Alerts />
+
+          <div style={C.card()}>
+            {/* Share banner */}
+            <div style={{ background:'rgba(124,58,237,0.1)', border:'1px solid rgba(124,58,237,0.25)', borderRadius:9, padding:'10px 13px', marginBottom:16, fontSize:13, display:'flex', alignItems:'center', gap:10 }}>
+              <span style={{ fontSize:18 }}>📋</span>
+              <span>Share <b style={{ color:'#a78bfa' }}>Session #{sid}</b> so others can join. Empty slots will be AI.</span>
+            </div>
+
+            {/* Slot grid */}
+            <div style={{ marginBottom:16 }}>
+              <div style={C.label}>{humanSlots.length} / 8 players joined</div>
+              <SlotGrid />
+            </div>
+
+            {/* Actions */}
+            {canJoin && !isFull && (
+              <button style={C.btn('linear-gradient(135deg,#16a34a,#15803d)')} disabled={loading} onClick={handleLobbyJoin}>
+                {loading ? '⏳ Joining…' : '🚪 Join This Game'}
+              </button>
+            )}
+            {isFull && !alreadyJoined && (
+              <div style={{ textAlign:'center', color:'#64748b', fontStyle:'italic', padding:'10px 0' }}>Room is full.</div>
+            )}
+            {isCreator && (
+              <button style={C.btn('linear-gradient(135deg,#7c3aed,#be185d)')} disabled={loading} onClick={handleBegin}>
+                {loading ? '⏳ Starting…' : '▶ Start Game'}
+              </button>
+            )}
+            {alreadyJoined && !isCreator && (
+              <div style={{ textAlign:'center', color:'#475569', fontStyle:'italic', padding:'10px 0', fontSize:13 }}>
+                ⏳ Waiting for host to start the game…
+              </div>
+            )}
+          </div>
+
+          <button style={{ ...C.btn('rgba(255,255,255,0.04)'), fontSize:12, color:'#475569', padding:'8px 14px' }} onClick={() => { setGame(null); setSid(null); setStatus(''); setError(''); }}>
+            ← Leave Room
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── GAME OVER ──────────────────────────────────────────────────────────────
+  if (game.phase === PHASE_OVER) {
+    const townWon = game.winner === TEAM_TOWN;
+    return (
+      <div style={C.page}>
+        <div style={C.wrap}>
+          <WalletBar />
+          <PageHeader phase={PHASE_OVER} />
+
+          {/* Winner banner */}
+          <div style={{ ...C.card(townWon ? '#4ade80' : '#f87171'), textAlign:'center', padding:28 }}>
+            <div style={{ fontSize:52, marginBottom:8 }}>{townWon ? '🏆' : '😈'}</div>
+            <div style={{ fontSize:24, fontWeight:900, color: townWon ? '#4ade80' : '#f87171' }}>
+              {townWon ? 'Town Wins!' : 'Mafia Wins!'}
+            </div>
+            <div style={{ fontSize:12, color:'#64748b', marginTop:6 }}>
+              {townWon ? 'Justice prevailed — all Mafia eliminated.' : 'The Mafia seized control of the town.'}
+            </div>
+          </div>
+
+          {/* Full reveal */}
+          <div style={C.card()}>
+            <div style={C.label}>Full Role Reveal</div>
+            {game.slots.map((sl, i) => {
+              const rm = ROLE_META[sl.role as keyof typeof ROLE_META];
+              return (
+                <div key={i} style={{ display:'flex', alignItems:'center', gap:10, padding:'7px 0', borderBottom:'1px solid rgba(255,255,255,0.04)' }}>
+                  <span style={{ fontSize:15 }}>{slotIcon(sl)}</span>
+                  <div style={{ flex:1 }}>
+                    <span style={{ fontWeight:600, fontSize:12 }}>{slotName(sl, i)}</span>
+                    {sl.addr === userAddress && <span style={{ marginLeft:6, ...C.badge('#7c3aed','rgba(124,58,237,0.15)') }}>YOU</span>}
+                  </div>
+                  <span style={C.badge(rm.color, rm.bg)}>{rm.icon} {rm.label}</span>
+                  <span style={{ fontSize:11, color: sl.alive ? '#4ade80' : '#ef4444' }}>{sl.alive ? '✓' : '✕'}</span>
+                </div>
+              );
+            })}
+          </div>
+
+          <button style={C.btn('rgba(255,255,255,0.06)')} onClick={() => { setGame(null); setSid(null); setStatus(''); setError(''); }}>
+            Play Again
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── NIGHT PHASE ────────────────────────────────────────────────────────────
+  if (game.phase === PHASE_NIGHT) {
+    const alive = game.slots.map((sl, i) => ({ sl, i })).filter(x => x.sl.alive);
+    const townAlive = alive.filter(x => x.sl.role !== ROLE_MAFIA);
+    const rm = me ? ROLE_META[me.role as keyof typeof ROLE_META] : null;
+
+    return (
+      <div style={C.page}>
+        <div style={C.wrap}>
+          <WalletBar />
+          <PageHeader phase={PHASE_NIGHT} />
+          <Alerts />
+          <LastEvent />
+
+          {/* Role card */}
+          {me && rm && (
+            <div style={{ ...C.card(rm.color), marginBottom:12 }}>
+              <div style={{ display:'flex', alignItems:'center', gap:13 }}>
+                <div style={{ width:48, height:48, borderRadius:12, background:rm.bg, border:`2px solid ${rm.color}55`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:24, flexShrink:0 }}>
+                  {rm.icon}
+                </div>
+                <div>
+                  <div style={{ fontWeight:800, fontSize:17, color:rm.color }}>{rm.label}</div>
+                  <div style={{ fontSize:12, color:'#94a3b8', marginTop:2 }}>{rm.desc}</div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Action panel */}
+          <div style={C.card()}>
+            {!inGame ? (
+              <div style={{ color:'#475569', textAlign:'center', padding:'8px 0', fontStyle:'italic', fontSize:13 }}>
+                👁 You are spectating this game.
+              </div>
+            ) : !me?.alive ? (
+              <div style={{ color:'#64748b', textAlign:'center', padding:'8px 0', fontStyle:'italic', fontSize:13 }}>
+                💀 Eliminated — you watch in silence.
+              </div>
+            ) : me?.submitted ? (
+              <div style={{ textAlign:'center', padding:'10px 0' }}>
+                <div style={{ fontSize:26, marginBottom:5 }}>✅</div>
+                <div style={{ fontWeight:700, color:'#4ade80', fontSize:15 }}>Action submitted!</div>
+                <div style={{ fontSize:12, color:'#64748b', marginTop:4 }}>Waiting for other players…</div>
+              </div>
+            ) : (
+              <>
+                {me.role === ROLE_VILLAGER && (
+                  <>
+                    <div style={{ color:'#94a3b8', fontSize:13, marginBottom:13 }}>Villagers sleep through the night — no action needed.</div>
+                    <button style={C.btn('rgba(100,116,139,0.25)')} disabled={loading} onClick={() => handleAction(PASS_TARGET)}>
+                      😴 Sleep (Pass)
+                    </button>
+                  </>
+                )}
+                {me.role === ROLE_MAFIA && (
+                  <>
+                    <div style={{ color:'#f87171', fontWeight:600, fontSize:13, marginBottom:12 }}>🔪 Kill — choose your target:</div>
+                    <div style={{ display:'flex', flexDirection:'column', gap:7 }}>
+                      {townAlive.map(({ sl, i }) => (
+                        <button key={i} style={C.btnRow('rgba(220,38,38,0.2)')} disabled={loading} onClick={() => handleAction(i)}>
+                          <span style={{ marginRight:9 }}>{slotIcon(sl)}</span>{slotName(sl, i)}
+                        </button>
+                      ))}
+                      {townAlive.length === 0 && <div style={{ color:'#475569', fontSize:12 }}>No Town players alive.</div>}
+                    </div>
+                  </>
+                )}
+                {me.role === ROLE_DOCTOR && (
+                  <>
+                    <div style={{ color:'#4ade80', fontWeight:600, fontSize:13, marginBottom:12 }}>💊 Protect — choose who to save tonight:</div>
+                    <div style={{ display:'flex', flexDirection:'column', gap:7 }}>
+                      {alive.map(({ sl, i }) => (
+                        <button key={i} style={C.btnRow('rgba(34,197,94,0.18)')} disabled={loading} onClick={() => handleAction(i)}>
+                          <span style={{ marginRight:9 }}>{slotIcon(sl)}</span>{slotName(sl, i)}
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
+                {me.role === ROLE_SHERIFF && (
+                  <>
+                    <div style={{ color:'#facc15', fontWeight:600, fontSize:13, marginBottom:12 }}>⭐ Investigate — reveal a player's alignment:</div>
+                    <div style={{ display:'flex', flexDirection:'column', gap:7 }}>
+                      {alive.filter(({ i }) => i !== myIdx).map(({ sl, i }) => (
+                        <button key={i} style={C.btnRow('rgba(234,179,8,0.18)')} disabled={loading} onClick={() => handleAction(i)}>
+                          <span style={{ marginRight:9 }}>{slotIcon(sl)}</span>{slotName(sl, i)}
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </>
+            )}
+
+            <hr style={C.divider} />
+            <div style={{ fontSize:12, color:'#475569', marginBottom:9 }}>
+              Once all humans have acted (or to force-skip), anyone can resolve:
+            </div>
+            <button style={C.btn('linear-gradient(135deg,#5b21b6,#3730a3)')} disabled={loading} onClick={handleResolve}>
+              {loading ? '⏳ Resolving…' : '⚡ Resolve Night'}
+            </button>
+          </div>
+
+          {/* Player grid */}
+          <div style={C.card()}>
+            <div style={C.label}>{game.slots.filter(s => s.alive).length} players alive</div>
+            <SlotGrid />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── DAY PHASE ──────────────────────────────────────────────────────────────
+  if (game.phase === PHASE_DAY) {
+    const alive = game.slots.map((sl, i) => ({ sl, i })).filter(x => x.sl.alive);
+
+    return (
+      <div style={C.page}>
+        <div style={C.wrap}>
+          <WalletBar />
+          <PageHeader phase={PHASE_DAY} />
+          <Alerts />
+          <LastEvent />
+
+          <div style={C.card('#b45309')}>
+            {!inGame ? (
+              <div style={{ color:'#475569', textAlign:'center', padding:'8px 0', fontStyle:'italic', fontSize:13 }}>
+                👁 You are spectating this game.
+              </div>
+            ) : !me?.alive ? (
+              <div style={{ color:'#64748b', textAlign:'center', padding:'8px 0', fontStyle:'italic', fontSize:13 }}>
+                💀 Eliminated — you watch the vote.
+              </div>
+            ) : me?.submitted ? (
+              <div style={{ textAlign:'center', padding:'10px 0' }}>
+                <div style={{ fontSize:26, marginBottom:5 }}>✅</div>
+                <div style={{ fontWeight:700, color:'#4ade80', fontSize:15 }}>Vote cast!</div>
+                <div style={{ fontSize:12, color:'#64748b', marginTop:4 }}>Waiting for other votes…</div>
+              </div>
+            ) : (
+              <>
+                <div style={{ color:'#fde68a', fontWeight:600, fontSize:13, marginBottom:12 }}>🗳 Vote to eliminate a player:</div>
+                <div style={{ display:'flex', flexDirection:'column', gap:7 }}>
+                  {alive.filter(({ i }) => i !== myIdx).map(({ sl, i }) => (
+                    <button key={i} style={C.btnRow('rgba(180,83,9,0.25)')} disabled={loading} onClick={() => handleAction(i)}>
+                      <span style={{ marginRight:9 }}>{slotIcon(sl)}</span>{slotName(sl, i)}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+
+            <hr style={C.divider} />
+            <div style={{ fontSize:12, color:'#475569', marginBottom:9 }}>Advance the vote:</div>
+            <button style={C.btn('linear-gradient(135deg,#92400e,#78350f)')} disabled={loading} onClick={handleResolve}>
+              {loading ? '⏳ Resolving…' : '⚡ Resolve Day Vote'}
+            </button>
+          </div>
+
+          <div style={C.card()}>
+            <div style={C.label}>{game.slots.filter(s => s.alive).length} players alive</div>
+            <SlotGrid />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return null;
 }
